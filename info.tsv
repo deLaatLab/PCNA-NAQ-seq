@@ -1,5 +1,5 @@
 name	barcode	fastq1	fastq2
-A1	AACACCTA	/home/peter/projects/FM/fastq/PN_SEQ_IR-1_1.fastq.gz	/home/peter/projects/FM/fastq/PN_SEQ_IR-1_2.fastq.gz
+A1	AACACCTA	/path/to/PN_SEQ_IR-1_1.fastq.gz	/path/to/PN_SEQ_IR-1_2.fastq.gz
 A2	ACGTAGCT	/home/peter/projects/FM/fastq/PN_SEQ_IR-1_1.fastq.gz	/home/peter/projects/FM/fastq/PN_SEQ_IR-1_2.fastq.gz
 A3	ATATAGGA	/home/peter/projects/FM/fastq/PN_SEQ_IR-1_1.fastq.gz	/home/peter/projects/FM/fastq/PN_SEQ_IR-1_2.fastq.gz
 A4	CACAGTTG	/home/peter/projects/FM/fastq/PN_SEQ_IR-1_1.fastq.gz	/home/peter/projects/FM/fastq/PN_SEQ_IR-1_2.fastq.gz
