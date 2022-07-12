@@ -1,0 +1,511 @@
+
+
+# MNase-seq of PCNA-NAQ assay developed by the Mattiroli lab.
+# Rouillon et al.(submitted)
+# P.H.L. Krijger 2022
+
+# This script first demultiplexes the fastq file based on the ligated indexed adapter.
+# The same index should be present at both read ends. Therefore we only keep the reads that have the same index at their ends.
+# We remove the adapter sequence at the 5'end of the read. If the fragment is
+# shorter than the read length the read with end with the other adapter. In reality it will not matter.
+
+# The demultiplexed reads are mapped against the plasmid sequences that were used
+# using bwa. A mapping quallity of 60 is used, to make sure we are not mismapping
+# between the plasmids.
+
+# The analysis functions will calculate the fragment coverage for each plasmid.
+
+
+#To do: get seqnames and lengths from fasta files instead hardcoding them
+
+
+# Load the packages -------------------------------------------------------
+library(GenomicAlignments)
+
+
+# load the functions ------------------------------------------------------
+
+# Demultiplex the reads based on the barcode ------------------------------
+
+
+demux<-function(info.file, outF){
+  
+  if(!require("ShortRead",character.only = TRUE)) stop("Package not found: ShortRead")
+  
+  info<-read.delim(info.file, stringsAsFactors = FALSE)
+  
+  read1_adapter <- "CTCGGCATTCCTGCTGAACCGCTCTTCCGATCT"
+  read2_adapter <- "TACACTCTTTCCCTACACGACGCTCTTCCGATCT"
+  
+  #demultiplex per fastq file (now only 1 per info file)
+  
+  message("Reading fastq1")
+  f1 <- readFastq(as.character(info$fastq1[1]))
+  message(paste("Read in fastq1:",length(f1)))
+  message("Reading fastq2")
+  f2 <- readFastq(as.character(info$fastq2[1]))
+  message(paste("Read in fastq2:",length(f2)))
+  if(length(f1)!=length(f2)) stop("Paired end files cannot have different read numbers.")
+  
+  
+  
+  #Extract and trim reads containing the barcode
+  
+  for (i in 1:nrow(info)){
+    
+    name=info$name[i]
+    bc=info$barcode[i]
+    p1out <- paste0(outF,name,"_R1.fastq.gz")
+    p2out <- paste0(outF,name,"_R2.fastq.gz")
+    
+    if(!file.exists(p1out)&!file.exists(p2out)){
+      
+      message(paste0("Demultiplexing experiment: ",name, " with barcode: ",bc))
+      
+      demultiplex = srFilter(function(x) {
+        substr(sread(x), 1+nchar(read1_adapter), nchar(read1_adapter)+nchar(bc)) == bc
+      }, name = "demultiplex")
+      
+      demux.f1 <- f1[demultiplex(f1)]
+      demux.f1.trim<-narrow(demux.f1, start = 1+nchar(paste0(read1_adapter,bc,"T")))
+      
+      
+      demultiplexRead2 = srFilter(function(x) {
+        substr(sread(x), 1+nchar(read2_adapter), nchar(read2_adapter)+nchar(bc)) == bc
+      }, name = "demultiplexRead2")
+      
+      demux.f2 <- f2[demultiplexRead2(f2)]
+      demux.f2.trim<-narrow(demux.f2, start = 1+nchar(paste0(read2_adapter,bc,"T")))
+      
+      
+      #Only keep reads that have barcode in both reads (discuss with FM if this is to strict)
+      ID.R1<-as.character(id(demux.f1.trim))
+      ID.R2<-gsub("2:N:0:","1:N:0:",as.character(id(demux.f2)))
+      
+      writeFastq(demux.f1.trim[ID.R1 %in% ID.R2], p1out, mode="a")
+      message(paste(sum(ID.R1 %in% ID.R2), "processed reads written to file:", p1out))
+      
+      writeFastq(demux.f2.trim[ID.R2 %in% ID.R1], p2out, mode="a")
+      message(paste(sum(ID.R2 %in% ID.R1), "processed reads written to file:", p2out))
+    }else{message("Output file already exists")}  
+  }
+  message("Done!")
+}
+
+
+
+
+
+# Map using BWA -----------------------------------------------------------
+
+
+makeIndex <- function(plasmidFile){
+  
+  if(file.exists(paste0(plasmidFile,".pac"))){
+    message("Index for ",plasmidFile," already exists")
+  }else{
+    CMD <- paste(
+      "(bwa index",
+      plasmidFile,
+      ") 2>&1"
+    )
+    
+    index.output <- system(command = CMD
+                           , intern = TRUE)
+    
+  }
+  
+  
+}
+
+
+mapreads <-
+  function(ncores = 12,
+           index,
+           fastqF,
+           bamF,
+           info.file,
+           MQ=NULL) {
+    info <- read.delim(info.file, stringsAsFactors = FALSE)
+    
+    
+    for (i in 1:nrow(info)) {
+      name = info$name[i]
+      message(paste0("Mapping experiment: ",name))
+      fastq1 <- paste0(fastqF, name, "_R1.fastq.gz")
+      fastq2 <- paste0(fastqF, name, "_R2.fastq.gz")
+      if(is.null(MQ)){
+        bamFile <- paste0(bamF, name, ".bam")
+      }else{
+        bamFile <- paste0(bamF, name,"_MQ",MQ,".bam")
+      }
+      
+      
+      TEMPfile <-
+        tempfile(pattern = "aln.",
+                 tmpdir = tempdir(),
+                 fileext = "")
+      
+      if(is.null(MQ)){
+        
+        CMD <- paste(
+          "(bwa mem -t",
+          ncores,
+          index,
+          fastq1,
+          fastq2,
+          "| samtools view -u -F 780 - | samtools sort -T ",
+          TEMPfile,
+          " -o ",
+          bamFile,
+          ") 2>&1"
+        )
+      }else{
+        CMD <- paste(
+          "(bwa mem -t",
+          ncores,
+          index,
+          fastq1,
+          fastq2,
+          "| samtools view -q ",MQ," -u -F 780 - | samtools sort -T ",
+          TEMPfile,
+          " -o ",
+          bamFile,
+          ") 2>&1"
+        )
+      }
+      
+      bowtie.output <- system(command = CMD
+                              , intern = TRUE)
+      
+      unlink(TEMPfile)
+      system(paste0("samtools index ",
+                    bamFile))
+      
+    }
+  }
+
+
+
+
+embryo <- function(){
+  
+  
+  logo<-c(" "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," ",
+          " "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," ","i",",",".","r"," ","r","r","s","i",";",":",";","s","i","r"," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," ",
+          " "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," ",";",":",";",";","X","X","5","X","X","2","2","A","2","2","s",";","2",",","i",";","."," "," "," "," "," "," "," "," "," "," "," "," ",
+          " "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," ","i","s",";","A","A","3","X","A","3","h","h","5","A","3","M","2","2","2","A","h","2","A","r","5","i",":"," "," "," "," "," "," "," "," "," "," ",
+          " "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," ","i",".","r","X","5","r","M","2","M","G","s","H","H","S","h","M","2","G","H","2","M","r","S","h","3","5","i","r","s"," "," "," "," "," "," "," "," ",
+          " "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," ",";","r",".","2","i","5","G","h","G","#","3","@","B","2","G","h","G","&","2","h","A","G","G","h","3","M","A","2","2",".","X"," "," "," "," "," "," "," ",
+          " "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," ",",",":","X","2","X","h","X","9","H","5","#","G","#","9","H","H","M","G","S","M","h","M","M","M","2","H","2","5","X","3","A","r"," "," "," "," "," "," ",
+          " "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," ","X","s","i","h","2","S","5","3","M","#","#","5","3","#","#","9","M","5","9","G","#","G","A","&","B","3","3","5","H","2","h","i","i",";"," "," "," "," ",
+          " "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," ","r",":","2","h","2","h","#","#","#","S","5","#","G","5","B","h","M","&","A","B","#","9"," ","2","3","&","h","A","G","s","H","3",",","s",","," "," "," ",
+          " "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," ","s",".","2","r","5","M","s","S","S","2","&","h","S","B","h","S","#","3","&","h","H","B","M","&","S","2","#","M","H","H","A","3","5","i",";","."," "," ",
+          " "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," ",".","s",";","r","s","5","G","2","3","&","H","#","5","M","B","G","3","h","h","9","h","2","G","M","9","G","3","S","G","A","h","s","A","A",",",","," "," ",
+          " "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," ",":"," ","r","A","r","5","2","H","M","M","3","G","B","2","h","h","G","#","5","5","S","S","H","M","h","9","G","M","M","3","9","3","s","5","i","i"," "," ",
+          " "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," ","r",".",";","2","i","3","X","2","3","3","3","M","M","H","M","A","B","3","2","H","r","M","M","s","3","2","3","H","A","9","h","A","2",";",","," ",
+          " "," "," "," "," "," "," ",";",".",":","r"," "," "," "," "," "," "," "," ",";",":","i",";","2","X","2","3","5","5","M","A","3","A","5","M","A","M","3","2","2","A","s","i","5","5","h","A","H","h","3","5","i",";","."," ",
+          " "," "," "," "," "," "," ",";","s",";",":",";","."," "," "," "," "," "," "," "," ",":",":",",","A","s","i","X","s","A","s","s","A","A","A","X","r","r","X",";",".",",","i",";","r","X","2","M","h","r","3",",","s"," "," ",
+          " "," "," "," "," "," ",".",";","s","s","r",".",";"," "," "," "," "," "," "," "," "," ",","," ",",",":",",","A"," ",";","i",";","A","i",",",";",";",":",","," "," ","."," ",";","i","5","h","A","G","5",":","X",":"," "," ",
+          " "," "," "," "," "," "," ","s","i","2","h"," ","i",","," "," "," "," "," "," "," "," "," "," ",":"," ",",",":",":","r"," ","s",",",":","i",".",";"," ",":"," ",".",".",".",",","A","h","2","M","X","3","5",";","i"," "," ",
+          " "," "," "," "," "," "," ",";","X",";","M","3",":",":",";",","," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," ",",",".",":","2","X","h","5","S","h","s","5",";","r"," "," ",
+          " "," "," "," "," "," "," ",".","5","r","s","X","s","r",".",";"," ","."," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," ",":",";","X","2","s","H","h","2","A","2",":",":"," "," "," ",
+          " "," "," "," "," "," "," "," "," ","r","s",";","5","r",".","i"," ",";"," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," ",","," ",";","r","3","A","h","h","2","h","A",":","s"," "," "," "," ",
+          " "," "," "," "," "," "," "," "," "," ","A","i","i","2","X","r",";",":"," ",".","."," "," "," "," "," "," "," "," "," "," "," "," ",".","."," ",":",".","3",":","2","X","5","H","M","2","A","s","s","r",","," "," "," "," ",
+          " "," "," "," "," "," "," "," "," "," ",":",";","3","5","X","2","i","r","r",".","s",":",",",".",","," ",".","."," ",","," ",","," ",":","r",",","5",";","r","5","5","M","M","i","A","5","s","A","."," "," "," "," "," "," ",
+          " "," "," "," "," "," "," "," "," "," "," "," ",".","X","X","3","2","s","s",":","r",".","i",".",".",":"," ",":"," "," ","i",".","i",":",".","X","r","3","M","A","3","A","5","A","A","i",",","s"," "," "," "," "," "," "," ",
+          " "," "," "," "," "," "," "," "," "," "," "," "," ","i","r",":","X","2","A","A","s",":",";","s","r",";",",",";","r","A",",","X","X","5","5","A","5","A","3","X","X","X",":","i","r",",",":","."," "," "," "," "," "," "," ",
+          " "," "," "," "," "," "," "," "," "," "," "," "," "," "," ","i",".","3","A",",","h","h","2","r","r","2","5","X","r","A","2","M","A","X","5","2","H","2","s",";","5",",","2","."," "," "," "," "," "," "," "," "," "," "," ",
+          " "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," ",":",".","X","i",".","5",";","h","5",",","3","A","r","r","i",";","A","i","A",";"," ","5"," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," ",
+          " "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," ",";"," ",";",".",",",";",":",":","r"," ",";","i",".",";"," ",".",":"," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," ",
+          " "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," ",","," ",".",","," ",","," ",",",","," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "," "
+  )
+  
+  logo.mat<-matrix(logo, nrow=28, ncol=55, byrow = T)
+  
+  for (i in 1:28) {
+    for (j in 1:55) {
+      cat(logo.mat[i,j])
+    }
+    cat('\n')
+  }
+  
+}
+
+CountFragments<-function(fragList,minLen,maxLen){
+  df<-data.frame(stringsAsFactors = FALSE)
+  for(i in 1:length(fragList)){
+    message(fragList[[i]]$name)
+    
+    newRow<-data.frame(name=fragList[[i]]$name
+                       ,loading=length(fragList[[i]]$fragmentsAll[seqnames(fragList[[i]]$fragmentsAll)=="207LoadingControl"])
+                       ,pRS415=length(fragList[[i]]$fragmentsAll[seqnames(fragList[[i]]$fragmentsAll)=="pRS415"])
+                       ,pLoxHisCac3=length(fragList[[i]]$fragmentsAll[seqnames(fragList[[i]]$fragmentsAll)=="pLoxHisCac3"])
+                       ,Total=length(fragList[[i]]$fragmentsAll)
+                       ,loading_SizeSel=length(fragList[[i]]$fragmentsAll[seqnames(fragList[[i]]$fragmentsAll)=="207LoadingControl" & width(fragList[[i]]$fragmentsAll)>=minLen & width(fragList[[i]]$fragmentsAll)<=maxLen])
+                       ,pRS415_SizeSel=length(fragList[[i]]$fragmentsAll[seqnames(fragList[[i]]$fragmentsAll)=="pRS415" & width(fragList[[i]]$fragmentsAll)>=minLen & width(fragList[[i]]$fragmentsAll)<=maxLen])
+                       ,pLoxHisCac3_SizeSel=length(fragList[[i]]$fragmentsAll[seqnames(fragList[[i]]$fragmentsAll)=="pLoxHisCac3" & width(fragList[[i]]$fragmentsAll)>=minLen & width(fragList[[i]]$fragmentsAll)<=maxLen])
+                       ,Total_SizeSel=length(fragList[[i]]$fragmentsAll[width(fragList[[i]]$fragmentsAll)>=minLen & width(fragList[[i]]$fragmentsAll)<=maxLen])
+    )
+    df<-rbind(df,newRow)
+  }
+  message("Done!")
+  return(df)
+}
+
+getWarning<-function(bamFile){
+  
+  param <- ScanBamParam(flag=scanBamFlag(isProperPair=TRUE))
+  plasmidReads <- readGAlignmentPairs(bamFile,use.names=TRUE, strandMode=2, param=param)
+  
+  fragments<-GRanges(
+    seqnames= seqnames(plasmidReads)
+    ,ranges = IRanges(
+      start= pmin(
+        start(first(plasmidReads))
+        ,start(last(plasmidReads))
+      )
+      ,end = pmax(
+        end(first(plasmidReads))
+        ,end(last(plasmidReads))
+      )
+    )
+  )
+  
+  
+  
+  return(list(name=basename(bamFile)
+              ,fragmentsAll=fragments
+              ,dumpedAln=getDumpedAlignments()
+  )
+  
+  )
+}
+
+getFragments<-function(bamFile){
+  
+  param <- ScanBamParam(flag=scanBamFlag(isProperPair=TRUE))
+  plasmidReads <- readGAlignmentPairs(bamFile,use.names=TRUE, strandMode=2, param=param)
+  
+  fragments<-GRanges(
+    seqnames= seqnames(plasmidReads)
+    ,ranges = IRanges(
+      start= pmin(
+        start(first(plasmidReads))
+        ,start(last(plasmidReads))
+      )
+      ,end = pmax(
+        end(first(plasmidReads))
+        ,end(last(plasmidReads))
+      )
+    )
+  )
+  
+  
+  
+  return(list(name=basename(bamFile)
+              ,fragmentsAll=fragments
+  )
+  )
+}
+
+getFragmentsV2<-function(bamFile, MQ=0){
+  
+  param2 <- ScanBamParam(flag=scanBamFlag(isProperPair=TRUE),mapqFilter=as.integer(MQ))
+  plasmidReads <- readGAlignmentPairs(bamFile,use.names=TRUE, strandMode=2, param=param2)
+  
+  fragments<-GRanges(
+    seqnames= seqnames(plasmidReads)
+    ,ranges = IRanges(
+      start= pmin(
+        start(first(plasmidReads))
+        ,start(last(plasmidReads))
+      )
+      ,end = pmax(
+        end(first(plasmidReads))
+        ,end(last(plasmidReads))
+      )
+    )
+  )
+  
+  
+  
+  return(list(name=basename(bamFile)
+              ,fragmentsAll=fragments
+              ,MQ=MQ
+  )
+  )
+}
+
+getFragmentCoverage<-function(fragments, minLen=1, maxLen=1000){
+  
+  #plasmid.pRS415 <- GRanges(seqnames="pRS415",IRanges(1,6022))
+  #plasmid.pLox <- GRanges(seqnames="pLoxHisCac3",IRanges(1,6507))
+  #plasmid.loading <- GRanges(seqnames="207LoadingControl",IRanges(1,207))
+  
+  
+  name<-fragments$name
+  fragments<-fragments$fragmentsAll
+  
+  normFactor <- 1000/length(fragments[seqnames(fragments)=="207LoadingControl"])
+  
+  fragmentsSize<-fragments[width(fragments)>=minLen & width(fragments)<=maxLen]
+  
+  
+  #pRS415Cov
+  plasmid<-GRanges(seqnames="pRS415",IRanges(start=c(1:6022),end=c(1:6022)))
+  pRS415Cov<-countOverlaps(plasmid,fragmentsSize)
+  pRS415Covnorm <- pRS415Cov*normFactor
+  
+  #  cov <- coverage(fragmentsSize)
+  # (identical(pRS415Cov,as.vector(cov$pRS415))) #True
+  
+  #loading
+  plasmid<-GRanges(seqnames="207LoadingControl",IRanges(start=c(1:207),end=c(1:207)))
+  LoadingControlCov<-countOverlaps(plasmid,fragmentsSize)
+  LoadingControlCovnorm <- LoadingControlCov*normFactor
+  
+  #pLoxHisCac3
+  plasmid<-GRanges(seqnames="pLoxHisCac3",IRanges(start=c(1:6507),end=c(1:6507)))
+  pLoxHisCac3Cov <- countOverlaps(plasmid,fragmentsSize)
+  pLoxHisCac3Covnorm <- pLoxHisCac3Cov*normFactor
+  
+  
+  return(list(name=name
+              ,fragmentsAll=fragments
+              ,fragmentsSize=fragmentsSize
+              ,LoadingControlCov=LoadingControlCov
+              ,normLoadingControlCov=LoadingControlCovnorm
+              ,pRS415Cov=pRS415Cov
+              ,normpRS415Cov=pRS415Covnorm
+              ,pLoxHisCac3Cov=pLoxHisCac3Cov
+              ,normpLoxHisCac3Cov=pLoxHisCac3Covnorm
+              ,minLen=minLen
+              ,maxLen=maxLen))
+}
+
+plotSize<-function(fragments, plasmid=NULL, plot="density"){
+  
+  chr<-plasmid
+  name<-fragments$name
+  
+  if (!is.null(plasmid)) {
+    fragments <-
+      fragments$fragmentsAll[seqnames(fragments$fragmentsAll) == chr]
+  } else{
+    fragments <- fragments$fragmentsAll
+    chr <- "All fragments"
+  }
+  
+  
+  
+  if(plot=="density"){
+    #plot the size distribution of all fragments in a bam file.
+    d <- density(width(fragments)) 
+    plot(d, xlim=c(1, 250), xaxt='n', main = paste(name, chr)) 
+    axis(side = 1, at= c(0,50,147,250))
+    
+    abline(v=147, lty=2)
+    
+  }
+  
+  if(plot=="hist"){
+    hist(width(fragments),xlab = "size fragments",main = paste(name, chr), xlim=c(0,250), breaks=50) 
+  }
+}
+plotCov<-function(fragments, minLen=1, maxLen=1000,plasmid, col="black", yMax=NULL){
+  chr<-plasmid
+  name<-fragments$name
+  
+  cov<-getFragmentCoverage(fragments, minLen=minLen, maxLen=maxLen)
+  
+  
+  if(chr=="pRS415"){
+    covChr<-cov$normpRS415Cov
+    xCov<-c(1:length(covChr))
+  }
+  
+  if(chr=="pLoxHisCac3"){
+    covChr<-cov$normpLoxHisCac3Cov
+    xCov<-c(1:length(covChr))
+  }
+  if(chr=="207LoadingControl"){
+    covChr<-cov$normLoadingControlCov
+    xCov<-c(1:length(covChr))
+  }
+  if(is.null(yMax)){
+    yMax<-max(covChr+10)
+  }
+  plot(x=xCov,covChr, type="l", col=col, main=paste(cov$name,"size:",cov$minLen,"-",cov$maxLen), xlab = paste(chr,"(nt)"), ylim = c(0,yMax))    
+}
+
+makeTable<-function(fragList, outF=".", minLen, maxLen){  
+  outfile1 <- paste0(outF, "/pRS415_", minLen, "nt_", maxLen, "nt.csv")
+  outfile2 <- paste0(outF, "/pLoxHisCac3_", minLen, "nt_", maxLen, "nt.csv")
+  
+  pRS415.df <- data.frame(row.names = 1:6022, stringsAsFactors = False)
+  pLoxHisCac3Cov.df <- data.frame(row.names = 1:6507, stringsAsFactors = False)
+  
+  for (i in 1:length(fragList)) {
+    name<-fragList[[i]]$name
+    cov<-getFragmentCoverage(fragList[[i]], minLen=minLen, maxLen=maxLen)
+    
+    newCol <- data.frame(covData = cov$normpRS415Cov)
+    colnames(newCol) <- name
+    pRS415.df <- cbind(pRS415.df, newCol)
+    newCol <- data.frame(covData = cov$normpLoxHisCac3Cov)
+    colnames(newCol) <- name
+    pLoxHisCac3Cov.df <- cbind(pLoxHisCac3Cov.df, newCol)
+    
+  }
+  message("Writing normalized coverage to: ", outfile1)
+  write.csv(pRS415.df, outfile1, row.names = FALSE)
+  message("Writing normalized coverage to: ", outfile2)
+  write.csv(pLoxHisCac3Cov.df, outfile2, row.names = FALSE)
+  message("Done!")
+}  
+
+plot2Cov<-function(fragments1,fragments2, minLen=1, maxLen=1000,plasmid){
+  chr<-plasmid
+  name1<-fragments1$name
+  name2<-fragments2$name
+  
+  cov1<-getFragmentCoverage(fragments1, minLen=minLen, maxLen=maxLen)
+  cov2<-getFragmentCoverage(fragments2, minLen=minLen, maxLen=maxLen)
+  
+  
+  if(chr=="pRS415"){
+    cov1Chr<-cov1$normpRS415Cov
+    cov2Chr<-cov2$normpRS415Cov
+    xCov<-c(1:length(cov1Chr))
+  }
+  
+  if(chr=="pLoxHisCac3"){
+    cov1Chr<-cov1$normpLoxHisCac3Cov
+    cov2Chr<-cov2$normpLoxHisCac3Cov
+    xCov<-c(1:length(cov1Chr))
+  }
+  if(chr=="207LoadingControl"){
+    cov1Chr<-cov1$normLoadingControlCov
+    cov2Chr<-cov2$normLoadingControlCov
+    xCov<-c(1:length(cov1Chr))
+  }
+  
+  plot(x=xCov,cov1Chr, type="l", col="blue", main=paste(name1,"vs",name2,"size:",minLen,"-",maxLen), xlab = paste(chr,"(nt)"))  
+  lines(x=xCov, y=cov2Chr, col="red")
+  
+  legend("topleft"
+         ,legend=c(name1,name2)
+         ,col = c("blue","red")
+         ,lty = 1
+         ,bty ="n", pch=NA)
+}
+
+
+# Run ---------------------------------------------------------------------
+
+
+embryo()
+message("")
+message("Functions loaded to process MNase-seq of PCNA-NAQ assay developed by the Mattiroli lab.")
+message("")
