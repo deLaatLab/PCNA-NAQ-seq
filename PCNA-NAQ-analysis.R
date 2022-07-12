@@ -10,15 +10,13 @@
 
 # Step 1: Get the functions -----------------------------------------------
 #Select the following line and click Run:
-source("/home/p.krijger_cbs-niob.local/projects/FM/FM_run1/submission/R/functions_PCNA_NAQ_220712.R")
-
-
+source("/path/to/PCNA-NAQ-functions")
 
 # Step 2: Demultiplex the fastq files -------------------------------------
 #This only needs to be done 1x for each experiment
 
-fastqF<-"/home/p.krijger_cbs-niob.local/projects/FM/FM_run1/submission/R/fastq/"
-info.file<-"/home/p.krijger_cbs-niob.local/projects/FM/FM_run1/submission/R/info.tsv"
+fastqF<-"/path/to/fastq/"
+info.file<-"/path/to/info.tsv"
 
 #Run the following line to demultiplex and trim the fastq
 demux(info.file, fastqF)
@@ -27,8 +25,8 @@ demux(info.file, fastqF)
 
 # Step 3: Map the data ----------------------------------------------------
 
-plasmidFile<-'/home/p.krijger_cbs-niob.local/projects/FM/FM_run1/submission/R/bwa/FM_plasmids.fa'
-bamFolder<- "/home/p.krijger_cbs-niob.local/projects/FM/FM_run1/submission/R/bam/"
+plasmidFile<-'/path/to/plasmids.fa'
+bamFolder<- '/path/to/bam/'
 
 #Make a bwa index based on the plasmid sequences (only need to be done 1x)
 makeIndex(plasmidFile)
@@ -42,12 +40,10 @@ mapreads (ncores = 8
           ,MQ=60) 
 
 
-
-
 # Step 4: Define the bam files you want to analyze. -----------------------
 
 #Define the results folder:
-outF<-"/home/p.krijger_cbs-niob.local/projects/FM/FM_run1/submission/R/results/"
+outF<-'/path/to//results/'
 
 #automatically load all bam files stored in 1 folder:
 bamFiles<-list.files(bamFolder, pattern = "\\.bam$", full.names = TRUE)
