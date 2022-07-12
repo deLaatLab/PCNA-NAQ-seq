@@ -78,7 +78,7 @@ counts<-CountFragments(fragList,minLen=125,maxLen=160)
 write.table(x = counts,file = paste0(outF,"fragCounts.txt",quote = FALSE, row.names = FALSE))
 
 
-# Step 5: Plot the size distribution of the fragments. --------------------
+# Step 7: Plot the size distribution of the fragments. --------------------
 # usage plotSize(fragments, plasmid=NULL/pRS415/pLoxHisCac3/207LoadingControl, plot="density/hist")
 
 #plot size distribution
@@ -111,7 +111,7 @@ for(i in 1:length(fragList)){
 dev.off()
 
 
-# Step 6: Plot the coverage -----------------------------------------------
+# Step 8: Plot the coverage -----------------------------------------------
 
 #Plot the normalized coverage for each plasmid after size selection
 #usage: plotCov(fragments, minLen, maxLen,pRS415/pLoxHisCac3/207LoadingControl, col="black", yMax=NULL)
@@ -176,7 +176,7 @@ dev.off()
 
 
 
-# Step 7: Export coverage to a csv file -----------------------------------
+# Step 9: Export coverage to a csv file -----------------------------------
 #Save coverage data as csv file to look at the data using Excel
 minLen = 125
 maxLen = 160
